@@ -32,7 +32,7 @@ types and contracts.
   - `OptionContract` (strike, expiration, gamma, delta, vanna, charm,
     iv, open_interest, volume, bid, ask, option_type, dte)
   - `OptionChain` (symbol, spot_price, contracts: list[OptionContract])
-  - `GEXResult` (strike, call_gex, put_gex, net_gex)
+  - `GEXResult` (strike, call_gex, put_gex, net_gex, abs_net_gex)
   - `GammaLadder` (rows: list[GEXResult], call_wall, put_wall, flip_level,
     net_regime, vanna_exposure, charm_exposure)
 - Create `app/__init__.py` (empty)
@@ -105,10 +105,22 @@ returns a `GammaLadder`. Pure functions only — no API calls, no UI.
 
 ### Tasks
 - Create `app/gamma.py`:
-  - `calculate_gex(contract, spot) -> GEXResult`
-  - `build_gamma_ladder(chain: OptionChain) -> list[GEXResult]`
-  - Call GEX = +Gamma × OI × 100 × spot²
-  - Put GEX = -Gamma × OI × 100 × spot²
+  - `build_gamma_ladder(chain: OptionChain, weighted: bool = False) -> list[GEXResult]`
+  - Use pandas for the core calculation — groupby strike+side, pivot, derive net
+  - Standard GEX (default):
+      `gex = gamma * oi * 100 * spot²`
+  - Delta-weighted GEX (--weighted flag):
+      `gex = gamma * oi * 100 * spot² * abs(delta)`
+      This down-weights far OTM contracts with negligible real hedging impact.
+      Note: delta-weighted is a heuristic metric, not standard GEX — label it
+      clearly in output.
+  - Sign: calls stored as positive magnitude, puts stored as positive magnitude,
+    net_gex = call_gex - put_gex. Do not use a separate signed_gex column.
+  - Walls:
+      `call_wall = ladder.loc[ladder["net_gex"].idxmax(), "strike"]`
+      `put_wall  = ladder.loc[ladder["net_gex"].idxmin(), "strike"]`
+  - Null handling: treat None or 0 gamma/delta/oi as 0 — do not let NaN
+    propagate through calculations. Filter or fillna before computing.
 - Create `app/vanna.py`:
   - `calculate_vanna_exposure(chain: OptionChain) -> float`
   - VannaExposure = Vanna × OI × 100 × spot × IV (summed across chain)
@@ -121,10 +133,14 @@ returns a `GammaLadder`. Pure functions only — no API calls, no UI.
   - Recalculate net GEX at each grid price
   - Return interpolated zero-crossing price
 - Create `app/calculations.py`:
-  - Orchestrator: takes `OptionChain`, returns fully populated `GammaLadder`
+  - Orchestrator: takes `OptionChain` + config, returns fully populated `GammaLadder`
   - Calls gamma, vanna, charm, flip modules
   - Derives call_wall, put_wall, net_regime from ladder
-  - Supports optional `dte_filter` arg for 0DTE mode
+  - Produces three ladders every run:
+      - `full`   — all expirations
+      - `0dte`   — DTE = 0 only
+      - `nearterm` — DTE 0-2 only
+  - Accepts `weighted: bool` flag and passes it through to `build_gamma_ladder`
 
 ### Owns
     app/gamma.py
@@ -151,8 +167,10 @@ connection is needed.
   - Layout: header bar, key metrics panel, gamma ladder table, footer
   - Key metrics panel shows: spot, regime, flip level, call wall, put wall,
     vanna exposure, charm exposure
-  - Gamma ladder table: strike, net GEX, call GEX, put GEX with color
-    coding (green positive, red negative), spot marker (►), wall markers
+  - Gamma ladder table: strike, call GEX, put GEX, net GEX, abs net GEX
+    with color coding (green positive, red negative), spot marker (►),
+    wall markers. Tabs or toggle to switch between full / 0DTE / near-term
+    ladder views.
   - Keyboard shortcuts:
     - `s` → symbol input prompt
     - `r` → force refresh
@@ -162,7 +180,7 @@ connection is needed.
   - Auto-refresh via Textual timer (interval set by --refresh flag)
 - Create `main.py` — CLI entry point:
   - Parse CLI args: --symbol, --0dte, --max-dte, --refresh, --export,
-    --compact, --debug
+    --weighted, --compact, --debug
   - Load `.env`
   - Instantiate the correct `DataProvider` based on `DATA_PROVIDER` env var
   - Pass provider + config into the Textual app and run it
