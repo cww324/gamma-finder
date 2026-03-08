@@ -1,14 +1,13 @@
-# SPY Gamma Dashboard (V2)
+# Gamma Finder
 
-Terminal-based options positioning dashboard for SPY using the Charles
-Schwab API.
+Terminal-based options positioning dashboard using the Charles Schwab API.
 
 ------------------------------------------------------------------------
 
 ## Overview
 
-This project builds a Python terminal tool that calculates and
-visualizes **gamma exposure (GEX)** from the SPY options chain.
+Python terminal tool that calculates and visualizes **dealer gamma
+exposure (GEX)** from an options chain.
 
 The dashboard helps identify:
 
@@ -18,9 +17,10 @@ The dashboard helps identify:
 -   Put Wall
 -   Gamma Ladder by Strike
 -   0DTE Gamma Structure
+-   Vanna Exposure
+-   Charm Exposure
 
-This tool is intended for **market structure analysis**, not automated
-trading.
+Intended for **market structure analysis**, not automated trading.
 
 ------------------------------------------------------------------------
 
@@ -31,9 +31,7 @@ trading.
 Gamma measures the **rate of change of delta** with respect to price.
 
 Dealers hedging options positions must adjust their hedge when gamma
-changes.
-
-This hedging activity can influence price behavior.
+changes. This hedging activity can influence price behavior.
 
 ------------------------------------------------------------------------
 
@@ -42,39 +40,52 @@ This hedging activity can influence price behavior.
 Gamma exposure approximates how much hedging pressure exists at each
 strike.
 
-Simplified formula:
+Formula:
 
     GEX = Gamma × OpenInterest × ContractMultiplier × SpotPrice²
 
 Where:
 
--   Gamma = option gamma
+-   Gamma = option gamma from the chain
 -   OpenInterest = number of open contracts
 -   ContractMultiplier = 100 for US equity options
--   SpotPrice = current SPY price
+-   SpotPrice = current underlying price
 
-For ranking only, a simpler version may be used:
-
-    GEX_simple = Gamma × OpenInterest
-
-------------------------------------------------------------------------
-
-## Sign Convention
-
-To approximate dealer positioning:
+Sign convention to approximate dealer positioning:
 
     Call GEX  = +GEX
     Put GEX   = -GEX
-
-This creates **net gamma exposure**:
 
     Net GEX = Sum(Call GEX) - Sum(Put GEX)
 
 ------------------------------------------------------------------------
 
+## Vanna
+
+Vanna measures **how delta changes when implied volatility moves**.
+
+When IV spikes or collapses, dealers must re-hedge delta even if price
+has not moved. This makes vanna exposure particularly important on
+high-vol events like CPI prints, Fed announcements, and earnings.
+
+    VannaExposure = Vanna × OpenInterest × ContractMultiplier × SpotPrice × IV
+
+------------------------------------------------------------------------
+
+## Charm
+
+Charm measures **how delta decays with time**.
+
+As expiration approaches, delta shifts and dealers must re-hedge. On
+0DTE options, charm-driven flows can be significant into the close.
+
+    CharmExposure = Charm × OpenInterest × ContractMultiplier
+
+------------------------------------------------------------------------
+
 # Gamma Ladder
 
-Aggregate gamma exposure **by strike**.
+Aggregate gamma exposure by strike.
 
 Example:
 
@@ -88,97 +99,66 @@ Example:
 
 Interpretation:
 
--   Large positive gamma → price pinning
--   Large negative gamma → acceleration potential
+-   Large positive gamma → price pinning / resistance
+-   Large negative gamma → support or acceleration potential
 
 ------------------------------------------------------------------------
 
 # Call Wall
 
-Definition:
-
-The strike with the **largest positive gamma concentration**.
-
-Approximation:
+Strike with the **largest positive net gamma concentration**.
 
     CallWall = strike where NetGEX is maximum
 
-Meaning:
-
-Often acts as **resistance or pinning zone**.
+Often acts as resistance or a pinning zone. Useful for avoiding strikes
+priced well beyond where the market is likely to trade.
 
 ------------------------------------------------------------------------
 
 # Put Wall
 
-Definition:
-
-Strike with **largest negative gamma concentration**.
-
-Approximation:
+Strike with the **largest negative net gamma concentration**.
 
     PutWall = strike where NetGEX is minimum
 
-Meaning:
-
-Often behaves as **support or acceleration level**.
+Often behaves as support or an acceleration level below which moves can
+extend quickly.
 
 ------------------------------------------------------------------------
 
 # Gamma Flip
 
-Gamma Flip is the price where **net gamma changes sign**.
+Price where **net gamma changes sign**.
 
     NetGamma(price) = 0
 
-Above flip → Positive gamma regime\
-Below flip → Negative gamma regime
+    Above flip → Positive gamma regime (dealer hedging dampens moves)
+    Below flip → Negative gamma regime (dealer hedging amplifies moves)
 
-------------------------------------------------------------------------
+### Algorithm
 
-# Gamma Flip Algorithm
+**Step 1 - Price Grid**
 
-### Step 1 --- Price Grid
-
-Generate prices around current spot.
-
-Example:
-
-    grid = range(spot*0.97 → spot*1.03)
+    grid = range(spot * 0.97 → spot * 1.03)
     step = 0.5
 
-### Step 2 --- Recalculate Net Gamma
-
-For each price:
+**Step 2 - Recalculate Net Gamma at each grid price**
 
     GEX(price) = gamma × OI × 100 × price²
 
-Aggregate across all strikes.
-
-------------------------------------------------------------------------
-
-### Step 3 --- Find Zero Crossing
-
-Detect where net gamma switches sign.
-
-Example:
+**Step 3 - Find Zero Crossing via linear interpolation**
 
     NetGamma(683) = +20k
     NetGamma(682) = -10k
-
-Flip ≈ 682.x
-
-Use **linear interpolation**.
+    Flip ≈ 682.x
 
 ------------------------------------------------------------------------
 
 # 0DTE Gamma
 
-Same-day options heavily influence hedging.
+Same-day options heavily influence intraday hedging flows.
 
-Compute a separate ladder using:
-
-    DTE = 0
+Computed as a separate ladder using only contracts with DTE = 0.
 
 Outputs:
 
@@ -188,9 +168,36 @@ Outputs:
 
 ------------------------------------------------------------------------
 
+# A Note on Data Freshness
+
+**Open Interest (OI)** is published once daily by the OCC (Options
+Clearing Corporation). It reflects prior end-of-day positioning and
+does **not** update intraday.
+
+This means:
+
+-   The structural gamma levels (walls, flip) are essentially fixed at
+    market open and will not shift significantly during the day.
+-   Think of these as the **map for the day**.
+
+However, intraday refresh is still useful because:
+
+-   Spot price updates continuously, showing where you are on the map.
+-   IV changes cause the gamma flip level to drift.
+-   Charm and vanna exposures shift as time and vol move.
+
+Recommended usage: **run once at market open for structural levels,
+optionally refresh every N minutes to track spot and flip drift.**
+
+------------------------------------------------------------------------
+
 # Data Source
 
-Primary source: **Charles Schwab API**
+**Charles Schwab API** via `schwab-py`
+
+`schwab-py` is the community Python wrapper for the Schwab API. It
+handles the full OAuth 2.0 flow including the one-time browser
+authorization, token storage, and automatic background token refresh.
 
 Required option chain fields:
 
@@ -198,28 +205,47 @@ Required option chain fields:
 -   expiration
 -   gamma
 -   delta
+-   vanna
+-   charm
 -   implied volatility
 -   open interest
--   bid
--   ask
+-   bid / ask
 -   volume
 -   underlying price
+
+### Auth Setup (one-time)
+
+1.  Register an app at developer.schwab.com and get your API key.
+2.  Add credentials to `.env`.
+3.  On first run, a browser window opens for Schwab login and approval.
+4.  Token is saved locally. All future runs refresh silently.
+
+------------------------------------------------------------------------
+
+# Architecture
+
+The data layer uses a pluggable `DataProvider` abstraction. This keeps
+the calculation and display logic decoupled from the data source and
+makes local testing easy without live API calls.
+
+    DataProvider (abstract)
+    ├── SchwabProvider     ← default, uses schwab-py
+    └── MockProvider       ← reads saved JSON, for testing
 
 ------------------------------------------------------------------------
 
 # Tech Stack
 
 -   Python 3.11+
+-   schwab-py
 -   pandas
 -   numpy
--   rich (terminal UI)
--   httpx or requests
+-   textual (interactive terminal UI - keyboard navigation, reactive widgets, auto-refresh)
 -   python-dotenv
 
 Optional:
 
--   scipy
--   matplotlib
+-   scipy (for interpolation)
 
 ------------------------------------------------------------------------
 
@@ -231,44 +257,47 @@ Run dashboard:
 
 Options:
 
-    --symbol SPY
-    --0dte
-    --max-dte 2
-    --export csv
-    --export json
-    --compact
-    --debug
+    --symbol SPY        underlying symbol (default: SPY)
+    --0dte              show 0DTE breakdown
+    --max-dte 2         filter to near-term expirations only
+    --refresh 30        auto-refresh every N seconds
+    --export csv        export gamma ladder to CSV
+    --export json       export gamma ladder to JSON
+    --compact           condensed output
+    --debug             show raw API response
 
 ------------------------------------------------------------------------
 
 # Example Output
 
     ========================================
-    SPY GAMMA DASHBOARD
+    GAMMA FINDER  |  SPY
     ========================================
 
-    Underlying: SPY
-    Spot Price: 684.92
+    Spot Price:    684.92
+    Gamma Regime:  NEGATIVE
+    Gamma Flip:    682.40
 
-    Gamma Regime: NEGATIVE
-    Gamma Flip: 682.40
-
-    Call Wall: 690
-    Put Wall: 675
+    Call Wall:     690
+    Put Wall:      675
 
     Gamma Ladder
     -----------------------------
     695   +122k
-    690   +341k
+    690   +341k  ← CALL WALL
     685   +210k
+    ►684  (spot)
     680   -150k
-    675   -420k
+    675   -420k  ← PUT WALL
+
+    Vanna Exposure:   -18.2M  (vol-driven hedging pressure)
+    Charm Exposure:   +4.1M   (time-decay hedging pressure)
 
 ------------------------------------------------------------------------
 
 # File Structure
 
-    spy-gamma-dashboard/
+    gamma-finder/
     │
     ├── main.py
     ├── requirements.txt
@@ -277,9 +306,14 @@ Options:
     │
     ├── app/
     │   ├── auth.py
-    │   ├── schwab_client.py
+    │   ├── providers/
+    │   │   ├── base.py          ← DataProvider abstract class
+    │   │   ├── schwab.py        ← SchwabProvider
+    │   │   └── mock.py          ← MockProvider (testing)
     │   ├── parser.py
     │   ├── gamma.py
+    │   ├── vanna.py
+    │   ├── charm.py
     │   ├── flip.py
     │   ├── calculations.py
     │   └── terminal_ui.py
@@ -288,26 +322,21 @@ Options:
 
 # Important Limitations
 
-This model estimates dealer positioning.
-
-Limitations:
-
--   Open interest updates daily
--   Intraday positioning changes not fully captured
--   Dealer positioning inferred, not observed
+-   OI updates daily — intraday positioning changes are not captured
+-   Dealer positioning is inferred, not observed
+-   Vanna and charm calculations depend on IV accuracy from the chain
 -   Results should be used as **context, not prediction**
 
 ------------------------------------------------------------------------
 
 # Future Improvements
 
-Potential upgrades:
-
+-   Support for SPX, QQQ, TSLA, NVDA, and other optionable symbols
+    (symbol-agnostic design already in place via --symbol flag)
 -   Gamma heatmap by expiration
 -   Historical gamma snapshots
 -   Chart overlay of gamma levels
--   Intraday auto-refresh
--   Support for SPX / QQQ
+-   Vanna and charm heatmaps
 
 ------------------------------------------------------------------------
 
